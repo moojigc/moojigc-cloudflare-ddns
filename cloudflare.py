@@ -4,11 +4,20 @@
 import os
 from dataclasses import dataclass
 
+import urllib
 import requests
+from log import logger
 
 from dataclass_to_json import dataclass_to_json
 
 API_KEY = os.getenv('CLOUDFLARE_API_KEY')
+
+
+class CloudflareError(Exception):
+    """
+        Cloudflare Error
+    """
+    pass
 
 
 @dataclass
@@ -21,6 +30,7 @@ class DnsRecord:
     name: str
     content: str
     proxied: bool
+    comment: str = None
 
     def set_content(self, content: str):
         self.content = content
@@ -51,13 +61,33 @@ class CloudflareClient:
 
         return self
 
-    def get(self, url):
+    def validate_params(self, params):
+        valid_params = {'comment', 'content',
+                        'order', 'page', 'per_page', 'type'}
+
+        validated_params = {x: params[x]
+                            for x in params if params[x] and x in valid_params}
+        return validated_params
+
+    def get(self, path, **params):
         """
             Make a GET request to the Cloudflare API
         """
-        response = requests.get(
-            f"{self.base_url}/{url}", headers=self.headers, timeout=60)
-        response.raise_for_status()
+        query_params = urllib.parse.urlencode(self.validate_params(params))
+        url = f"{self.base_url}/{path}" + f"?{query_params}"
+
+        logger.info("GET %s", url)
+
+        response = requests.get(url, headers=self.headers, timeout=60)
+
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError:
+            response_body = response.json()
+            error_msg = (response_body.get(
+                'errors') or [{}])[0].get('message')
+
+            raise CloudflareError(f"{response.status_code = }, {error_msg = }")
 
         return response.json()
 
@@ -67,11 +97,12 @@ class CloudflareClient:
         """
         return self.get('zones')
 
-    def get_dns_records(self, zone_id):
+    def get_dns_records(self, zone_id, **params):
         """
             Get all DNS records for a zone
         """
-        records = self.get(f"zones/{zone_id}/dns_records")
+        records = self.get(
+            f"zones/{zone_id}/dns_records", **params)
 
         return [DnsRecord(
             id=record['id'],
@@ -79,6 +110,7 @@ class CloudflareClient:
             type=record['type'],
             content=record['content'],
             proxied=record['proxied'],
+            comment=record['comment'],
         ) for record in records['result']]
 
     def update_dns_records(self, zone_id: str, dns_record: DnsRecord):
