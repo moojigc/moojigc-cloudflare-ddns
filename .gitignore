@@ -1,5 +1,5 @@
 .vscode
-check_all_zones.sh
 __pycache__
 
 *.log
+.env
